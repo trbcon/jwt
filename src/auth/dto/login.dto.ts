@@ -1,11 +1,6 @@
 import { IsEmail, IsNotEmpty, IsString, MaxLength, MinLength } from "class-validator";
 
-export class RegisterRequest {
-    @IsString({ message: "Имя должно быть строкой" })
-    @IsNotEmpty({ message: "Имя не должно быть пустым" })
-    @MaxLength(50, { message:"s" })
-    name: string;
-
+export class LoginRequest {
     @IsString({ message: "Почта должна быть строкой" })
     @IsNotEmpty({ message: "Почта не должна быть пустой" })
     @IsEmail({}, { message: "Некорректный формат почты" })
