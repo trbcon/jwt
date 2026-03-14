@@ -1,30 +1,35 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RegisterRequest } from './dto/register.dto';
 import { hash, verify } from 'argon2';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { JwtPayload } from './interfaces/jwt.interface';
+import type { JwtPayload } from './interfaces/jwt.interface';
 import { LoginRequest } from './dto/login.dto';
-import { Response } from 'express';
+import type { Request, Response } from 'express';
+import { isDev } from 'src/utils/is-dev.util';
 
 @Injectable()
 export class AuthService {
-    private readonly JWT_SECRET: string;
+    // private readonly JWT_SECRET: string;
     private readonly JWT_ACCESS_TOKEN_TTL;
     private readonly JWT_REFRESH_TOKEN_TTL;
+
+    private readonly COOKIE_DOMAIN: string;
 
     constructor(
         private readonly prismaService: PrismaService,
         private readonly configService: ConfigService,
         private readonly jwtService: JwtService,
     ) {
-        this.JWT_SECRET = configService.getOrThrow<string>("JWT_SECRET");
+        // this.JWT_SECRET = configService.getOrThrow<string>("JWT_SECRET");
         this.JWT_ACCESS_TOKEN_TTL = configService.getOrThrow("JWT_ACCESS_TOKEN_TTL");
         this.JWT_REFRESH_TOKEN_TTL = configService.getOrThrow("JWT_REFRESH_TOKEN_TTL");
+
+        this.COOKIE_DOMAIN = configService.getOrThrow<string>('COOKIE_DOMAIN')
     }
 
-    async register(dto: RegisterRequest) {
+    async register(res: Response, dto: RegisterRequest) {
         const { name, email, password } = dto;
 
         const existUser = await this.prismaService.user.findUnique({
@@ -45,12 +50,12 @@ export class AuthService {
             }
         })
 
-        return this.generateToken(user.id);
+        return this.auth(res, user.id)
     }
 
 
 
-    async login(dto: LoginRequest) {
+    async login(res: Response, dto: LoginRequest) {
         const { email, password } = dto
 
         const user = await this.prismaService.user.findUnique({
@@ -73,11 +78,52 @@ export class AuthService {
             throw new NotFoundException('Пользователь не найден')
         }
 
-        return this.generateToken(user.id)
+        return this.auth(res, user.id)
     }
 
+    async refresh(req: Request, res: Response) {
+        const refreshToken = req.cookies['refreshToken']
 
+        if(!refreshToken) {
+            throw new UnauthorizedException('Недействительные токены')
+        }
 
+        const payload: JwtPayload = await this.jwtService.verifyAsync(refreshToken);
+
+        if(payload) {
+            const user = await this.prismaService.user.findUnique({
+                where: {
+                    id: payload.id,
+                },
+                select: {
+                    id: true,
+                }
+            })
+
+            if(!user) {
+                throw new NotFoundException('Пользователь не найден')
+            }
+
+            return this.auth(res, user.id)
+        }
+    }
+
+    async logout(res: Response) {
+        this.setCookie(res, 'refreshToken', new Date(0))
+        return true;
+    }
+
+    private auth(res: Response, id: string) {
+        const { accesToken, refreshToken } = this.generateToken(id);
+
+        this.setCookie(
+            res,
+            refreshToken,
+            new Date(Date.now() + 1000 * 60 * 60 * 24 * 7)
+        );
+
+        return { accesToken };
+    }
 
     private generateToken(id: string) {
         const payload:JwtPayload = { id };
@@ -97,7 +143,13 @@ export class AuthService {
     }
 
 
-    private setCookie(res: Response) {
-
+    private setCookie(res: Response, value: string, expires: Date) {
+        res.cookie('refreshToken', value, {
+            httpOnly: true,
+            domain: this.COOKIE_DOMAIN,
+            expires,
+            secure: !isDev(this.configService),
+            sameSite: isDev(this.configService) ? 'none' : 'lax',
+        })
     }
 }
